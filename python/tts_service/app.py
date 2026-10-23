@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import logging
+import os
+import signal
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -12,7 +15,8 @@ from pathlib import Path
 from typing import AsyncIterator
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+import soundfile as sf
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
 
 from tts_service.config import Config, save_config
 from tts_service.pending import PendingReply
@@ -21,8 +25,10 @@ from tts_service.protocol import (
     ConfigPatch,
     PreviewRequest,
     PreviewResponse,
+    SpeakPendingRequest,
     SpeakRequest,
     SpeakResponse,
+    SynthesizeRequest,
 )
 from tts_service.runtime import Runtime
 from tts_service.text import Reason, classify
@@ -48,6 +54,25 @@ def _config_payload(config: Config) -> dict:
         value = getattr(config, field.name)
         payload[field.name] = str(value) if isinstance(value, Path) else value
     return payload
+
+
+def _save_muted(runtime: Runtime, muted: bool) -> None:
+    """Persist a new mute state and publish it on the runtime."""
+    updated = replace(runtime.config, muted=muted)
+    updated.validate()
+    save_config(updated, runtime.config_path)
+    runtime.config = updated
+    logger.info("muted=%s", muted)
+
+
+def _shutdown(runtime: Runtime) -> None:
+    """Ask the owning process to exit after the HTTP response has flushed."""
+    callback = runtime.shutdown_callback
+    if callback is not None:
+        callback()
+        return
+    time.sleep(0.2)
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
 def create_app(runtime: Runtime) -> FastAPI:
@@ -264,5 +289,107 @@ def create_app(runtime: Runtime) -> FastAPI:
             result.words,
         )
         return SpeakResponse(action="queued", words=result.words, job_id=job.id)
+
+    @app.post("/speak-pending", response_model=SpeakResponse)
+    def speak_pending(request: SpeakPendingRequest) -> SpeakResponse:
+        if (
+            request.session_id is not None
+            and runtime.pending.get(request.session_id) is None
+        ):
+            raise HTTPException(status_code=404, detail="no pending reply")
+        reply = runtime.pending.pop(request.session_id)
+        if reply is None:
+            raise HTTPException(status_code=404, detail="no pending reply")
+        if request.session_id is not None and reply.session_id != request.session_id:
+            # A concurrent removal can make ``pop`` fall back to another session.
+            runtime.pending.put(reply)
+            raise HTTPException(status_code=404, detail="no pending reply")
+        job = SpeechJob(
+            id=uuid4().hex,
+            text=reply.text,
+            voice=runtime.config.voice,
+            session_id=reply.session_id,
+            message_id=reply.message_id,
+            source="manual",
+        )
+        if not runtime.pipeline.submit(job):
+            runtime.pending.put(reply)
+            logger.warning(
+                "speak-pending queue_full message_id=%s", reply.message_id
+            )
+            return SpeakResponse(action="queue_full", words=reply.words)
+        logger.info(
+            "speak-pending queued job_id=%s message_id=%s words=%s",
+            job.id,
+            reply.message_id,
+            reply.words,
+        )
+        return SpeakResponse(action="queued", words=reply.words, job_id=job.id)
+
+    @app.get("/pending")
+    def pending(session_id: str | None = None) -> dict:
+        replies = runtime.pending.list()
+        if session_id is not None:
+            replies = [reply for reply in replies if reply.session_id == session_id]
+        return {
+            "pending": [
+                {
+                    "session_id": reply.session_id,
+                    "message_id": reply.message_id,
+                    "reason": reply.reason,
+                    "words": reply.words,
+                    "created_at": reply.created_at,
+                }
+                for reply in replies
+            ]
+        }
+
+    @app.post("/stop")
+    def stop() -> dict:
+        runtime.pipeline.stop()
+        logger.info("speech stopped")
+        return {"stopped": True}
+
+    @app.post("/mute")
+    def mute() -> dict:
+        try:
+            _save_muted(runtime, True)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        runtime.pipeline.stop()
+        return {"muted": True}
+
+    @app.post("/unmute")
+    def unmute() -> dict:
+        try:
+            _save_muted(runtime, False)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"muted": False}
+
+    @app.post("/synthesize")
+    def synthesize(request: SynthesizeRequest) -> Response:
+        if not runtime.engine.loaded:
+            raise HTTPException(status_code=503, detail="engine not loaded")
+        if (
+            request.voice is not None
+            and request.voice not in runtime.engine.list_voices()
+        ):
+            raise HTTPException(
+                status_code=400, detail=f"unknown voice: {request.voice}"
+            )
+        audio, sample_rate = runtime.engine.synthesize(
+            request.text, request.voice or runtime.config.voice
+        )
+        buffer = io.BytesIO()
+        sf.write(buffer, audio, sample_rate, format="WAV", subtype="PCM_16")
+        content = buffer.getvalue()
+        logger.info("synthesize bytes=%s sample_rate=%s", len(content), sample_rate)
+        return Response(content=content, media_type="audio/wav")
+
+    @app.post("/shutdown")
+    def shutdown(background_tasks: BackgroundTasks) -> dict:
+        background_tasks.add_task(_shutdown, runtime)
+        return {"shutting_down": True}
 
     return app

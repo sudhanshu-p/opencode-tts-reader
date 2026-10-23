@@ -66,3 +66,16 @@ class PendingItem(BaseModel):
     reason: Reason
     words: int
     created_at: float
+
+
+class SpeakPendingRequest(BaseModel):
+    """A request to speak a held reply, optionally scoped to a session."""
+
+    session_id: str | None = None
+
+
+class SynthesizeRequest(BaseModel):
+    """Text to synthesize to WAV without queueing or playing it."""
+
+    text: str = Field(min_length=1, max_length=1_000_000)
+    voice: str | None = None
