@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+TARGET="$0"
+while [ -L "$TARGET" ]; do
+  DIR="$(CDPATH= cd -P -- "$(dirname -- "$TARGET")" && pwd)"
+  TARGET="$(readlink "$TARGET")"
+  case "$TARGET" in
+    /*) ;;
+    *) TARGET="$DIR/$TARGET" ;;
+  esac
+done
+ROOT="$(CDPATH= cd -P -- "$(dirname -- "$TARGET")/.." && pwd)"
+exec "$ROOT/python/.venv/bin/python" -m tts_service.cli "$@"

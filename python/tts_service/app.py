@@ -30,7 +30,7 @@ from tts_service.protocol import (
     SpeakResponse,
     SynthesizeRequest,
 )
-from tts_service.runtime import Runtime
+from tts_service.runtime import Runtime, build_runtime
 from tts_service.text import Reason, classify
 
 logger = logging.getLogger(__name__)
@@ -393,3 +393,7 @@ def create_app(runtime: Runtime) -> FastAPI:
         return {"shutting_down": True}
 
     return app
+
+
+def create_default_app() -> FastAPI:
+    return create_app(build_runtime())
