@@ -5,11 +5,12 @@ from __future__ import annotations
 import re
 
 _FENCED_BLOCK = re.compile(
-    r"^[ \t]*(?P<fence>`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]*(?P=fence)[ \t]*$)",
+    r"^[ \t]*(?:>[ \t]?)*[ \t]*(?P<fence>`{3,}|~{3,})[^\n]*\n"
+    r".*?(?:^[ \t]*(?:>[ \t]?)*[ \t]*(?P=fence)[ \t]*$)",
     re.MULTILINE | re.DOTALL,
 )
 _UNCLOSED_FENCE = re.compile(
-    r"^[ \t]*(?:`{3,}|~{3,})[^\n]*(?:\n.*)?\Z",
+    r"^[ \t]*(?:>[ \t]?)*[ \t]*(?:`{3,}|~{3,})[^\n]*(?:\n.*)?\Z",
     re.MULTILINE | re.DOTALL,
 )
 _TABLE_SEPARATOR = re.compile(r"^\s*\|?[\s:|-]+\|[\s:|-]*$")
@@ -17,7 +18,7 @@ _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 _HTML_TAG = re.compile(r"</?[A-Za-z][^>]*>")
 _IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
-_INLINE_CODE = re.compile(r"`[^`\n]*`")
+_INLINE_CODE = re.compile(r"(`+)(.+?)\1", re.DOTALL)
 _LATEX_BLOCK = re.compile(r"\$\$.*?\$\$", re.DOTALL)
 _LATEX_INLINE = re.compile(r"\$[^$\n]+\$")
 _BARE_URL = re.compile(r"https?://[^\s<>\"'`]+")
@@ -43,7 +44,9 @@ _NEWLINES = re.compile(r"\n{3,}")
 
 
 def _append_table_run(run: list[str], blocks: list[list[str]]) -> None:
-    if len(run) >= 2 and any(_TABLE_SEPARATOR.match(line) for line in run):
+    if len(run) >= 2 and any(
+        _TABLE_SEPARATOR.match(_BLOCKQUOTE.sub("", line)) for line in run
+    ):
         blocks.append(run)
 
 

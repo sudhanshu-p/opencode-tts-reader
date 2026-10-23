@@ -14,6 +14,10 @@ def test_inline_code_does_not_merge_words() -> None:
     assert clean("Run `uv sync` before starting.") == "Run before starting."
 
 
+def test_multi_backtick_inline_code_is_removed() -> None:
+    assert clean("Run ``uv sync`` now.") == "Run now."
+
+
 def test_diff_block_is_removed() -> None:
     raw = "Intro.\n```diff\n-old\n+new\n```\nOutro."
     assert clean(raw) == "Intro. Outro."
@@ -23,6 +27,25 @@ def test_table_is_removed() -> None:
     raw = "Intro.\n| a | b |\n|---|---|\n| 1 | 2 |\nOutro."
     assert clean(raw) == "Intro. Outro."
     assert len(find_table_blocks(raw)) == 1
+
+
+def test_blockquoted_table_is_removed() -> None:
+    raw = "> Intro.\n> | a | b |\n> |---|---|\n> | 1 | 2 |\nOutro."
+    assert clean(raw) == "Intro. Outro."
+
+
+def test_blockquoted_fenced_code_is_removed() -> None:
+    raw = "> ```\n> print('secret')\n> ```\nAfter."
+    out = clean(raw)
+    assert out == "After."
+    assert "secret" not in out
+
+
+def test_blockquoted_unclosed_fence_is_removed() -> None:
+    raw = "> ```python\n> print('secret')"
+    out = clean(raw)
+    assert out == ""
+    assert "secret" not in out
 
 
 def test_single_pipe_prose_is_kept() -> None:
