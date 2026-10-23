@@ -104,7 +104,7 @@ class SpeechPipeline:
         self.player = player
         self.config = config
         self._audio_dir = Path(data_dir or config.data_dir) / "audio"
-        self._jobs: queue.Queue[SpeechJob | None] = queue.Queue()
+        self._jobs: queue.Queue[tuple[int, SpeechJob] | None] = queue.Queue()
         self._play_queue: queue.Queue[tuple[int, Path] | None] = queue.Queue(maxsize=4)
         self._state_lock = threading.Lock()
         self._generation = 0
@@ -134,20 +134,20 @@ class SpeechPipeline:
         with self._state_lock:
             if not self._started:
                 return False
-        if self._jobs.qsize() >= self.config.max_queue:
-            logger.warning(
-                "queue full job_id=%s max_queue=%s", job.id, self.config.max_queue
-            )
-            return False
-        self._jobs.put(job)
-        return True
+            if self._jobs.qsize() >= self.config.max_queue:
+                logger.warning(
+                    "queue full job_id=%s max_queue=%s", job.id, self.config.max_queue
+                )
+                return False
+            self._jobs.put((self._generation, job))
+            return True
 
     def stop(self) -> None:
         """Cancel in-flight and queued speech without stopping the workers."""
         with self._state_lock:
             self._generation += 1
             self._current_job = None
-        self._drain_jobs()
+            self._drain_jobs()
         self._drain_playback()
         self.player.stop()
 
@@ -175,22 +175,28 @@ class SpeechPipeline:
 
     def _synthesis_loop(self) -> None:
         while True:
-            job = self._jobs.get()
-            if job is None:
+            item = self._jobs.get()
+            if item is None:
                 self._jobs.task_done()
                 return
+            generation, job = item
             try:
-                self._process_job(job)
+                self._process_job(job, generation)
             finally:
                 self._jobs.task_done()
 
-    def _process_job(self, job: SpeechJob) -> None:
+    def _process_job(self, job: SpeechJob, generation: int) -> None:
         try:
-            if not self._wait_for_engine(job):
+            if not self._wait_for_engine(job, generation):
                 return
             with self._state_lock:
+                if self._generation != generation:
+                    logger.info(
+                        "synthesis cancelled job_id=%s reason=generation-changed",
+                        job.id,
+                    )
+                    return
                 self._current_job = job.id
-                generation = self._generation
             logger.info("synthesis started job_id=%s", job.id)
             chunks = split_chunks(job.text, self.config.chunk_max_chars)
             for index, chunk in enumerate(chunks):
@@ -202,7 +208,11 @@ class SpeechPipeline:
                     return
                 audio, sample_rate = self.engine.synthesize(chunk, job.voice)
                 path = self._audio_dir / f"{job.id}-{index}.wav"
-                write_wav(path, audio, sample_rate)
+                try:
+                    write_wav(path, audio, sample_rate)
+                except Exception:
+                    self._unlink(path)
+                    raise
                 if not self._enqueue_playback(generation, path):
                     logger.info(
                         "synthesis cancelled job_id=%s reason=generation-changed",
@@ -217,9 +227,7 @@ class SpeechPipeline:
                 if self._current_job == job.id:
                     self._current_job = None
 
-    def _wait_for_engine(self, job: SpeechJob) -> bool:
-        with self._state_lock:
-            generation = self._generation
+    def _wait_for_engine(self, job: SpeechJob, generation: int) -> bool:
         deadline = time.monotonic() + _ENGINE_READY_TIMEOUT_S
         while not self.engine.loaded:
             if self._generation_changed(generation):
@@ -274,13 +282,15 @@ class SpeechPipeline:
             return self._generation != generation
 
     def _drain_jobs(self) -> None:
+        """Drain queued jobs; the caller must hold ``_state_lock``."""
         while True:
             try:
-                job = self._jobs.get_nowait()
+                item = self._jobs.get_nowait()
             except queue.Empty:
                 return
             try:
-                if job is not None:
+                if item is not None:
+                    _, job = item
                     logger.info("dropped queued job_id=%s reason=stopped", job.id)
             finally:
                 self._jobs.task_done()

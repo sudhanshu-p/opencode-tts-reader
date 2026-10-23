@@ -147,3 +147,47 @@ def test_stop_drops_queued_playback(tmp_path: Path) -> None:
     finally:
         player.release.set()
         pipeline.shutdown()
+
+
+class StopAfterWaitPipeline(SpeechPipeline):
+    def _wait_for_engine(self, job, *args):
+        result = super()._wait_for_engine(job, *args)
+        if result:
+            self.stop()
+        return result
+
+
+class StopBeforeWaitPipeline(SpeechPipeline):
+    def _wait_for_engine(self, job, *args):
+        self.stop()
+        return super()._wait_for_engine(job, *args)
+
+
+def test_stop_after_engine_wait_prevents_playback(tmp_path: Path) -> None:
+    cfg = replace(load_config(tmp_path / "missing.json"), chunk_max_chars=12)
+    engine = FakeEngine()
+    player = RecordingPlayer()
+    pipeline = StopAfterWaitPipeline(engine, player, cfg, data_dir=tmp_path)
+    pipeline.start()
+    try:
+        assert pipeline.submit(SpeechJob("j1", "Hello.", "Bella", "s", "m1"))
+        wait_until(lambda: pipeline._jobs.unfinished_tasks == 0)
+        assert engine.generated == []
+        assert player.played == []
+    finally:
+        pipeline.shutdown()
+
+
+def test_stop_before_engine_wait_prevents_playback(tmp_path: Path) -> None:
+    cfg = replace(load_config(tmp_path / "missing.json"), chunk_max_chars=12)
+    engine = FakeEngine()
+    player = RecordingPlayer()
+    pipeline = StopBeforeWaitPipeline(engine, player, cfg, data_dir=tmp_path)
+    pipeline.start()
+    try:
+        assert pipeline.submit(SpeechJob("j1", "Hello.", "Bella", "s", "m1"))
+        wait_until(lambda: pipeline._jobs.unfinished_tasks == 0)
+        assert engine.generated == []
+        assert player.played == []
+    finally:
+        pipeline.shutdown()
