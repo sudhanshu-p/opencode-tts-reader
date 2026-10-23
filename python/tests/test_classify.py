@@ -55,3 +55,13 @@ def test_code_is_not_counted(cfg) -> None:
     assert result.words == 2
     assert result.document_like is False
     assert result.too_long is False
+
+
+def test_announce_code_is_forwarded(cfg) -> None:
+    cfg = replace(cfg, announce_code=True)
+    result = classify(
+        "Before.\n```\ncode\n```\nAfter.",
+        turn_has_markdown_file=False,
+        config=cfg,
+    )
+    assert "Code block omitted." in result.filtered

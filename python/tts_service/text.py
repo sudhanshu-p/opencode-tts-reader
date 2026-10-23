@@ -171,7 +171,7 @@ def classify(
     raw: str, *, turn_has_markdown_file: bool, config: Config
 ) -> Classification:
     """Filter ``raw`` and decide whether it should be read automatically."""
-    filtered = filter_for_speech(raw)
+    filtered = filter_for_speech(raw, announce_code=config.announce_code)
     words = count_words(filtered)
     headings = count_headings(raw)
     table_rows = count_table_rows(raw)
