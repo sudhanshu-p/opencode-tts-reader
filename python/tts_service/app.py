@@ -2,23 +2,30 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 from dataclasses import fields, replace
 from pathlib import Path
 from typing import AsyncIterator
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 
 from tts_service.config import Config, save_config
+from tts_service.pending import PendingReply
+from tts_service.pipeline import SpeechJob
 from tts_service.protocol import (
     ConfigPatch,
     PreviewRequest,
     PreviewResponse,
+    SpeakRequest,
+    SpeakResponse,
 )
 from tts_service.runtime import Runtime
-from tts_service.text import classify
+from tts_service.text import Reason, classify
 
 logger = logging.getLogger(__name__)
 
@@ -130,5 +137,132 @@ def create_app(runtime: Runtime) -> FastAPI:
             too_long=result.too_long,
             reason=result.reason.value if result.reason is not None else None,
         )
+
+    @app.post("/speak", response_model=SpeakResponse)
+    def speak(request: SpeakRequest) -> SpeakResponse:
+        config = runtime.config
+
+        if request.voice is not None and runtime.engine.loaded:
+            if request.voice not in runtime.engine.list_voices():
+                raise HTTPException(
+                    status_code=400, detail=f"unknown voice: {request.voice}"
+                )
+
+        if request.source == "auto" and (config.muted or not config.auto_read):
+            logger.info("speak muted source=auto")
+            return SpeakResponse(action="muted", words=0)
+
+        result = classify(
+            request.text,
+            turn_has_markdown_file=request.turn_has_markdown_file,
+            config=config,
+        )
+
+        if not result.filtered.strip():
+            if config.announce_skipped:
+                runtime.pipeline.submit(
+                    SpeechJob(
+                        id=uuid4().hex,
+                        text="Nothing to read aloud.",
+                        voice=request.voice or config.voice,
+                        session_id=request.session_id,
+                        message_id=request.message_id,
+                        source="notice",
+                    )
+                )
+            logger.info(
+                "speak empty source=%s message_id=%s", request.source, request.message_id
+            )
+            return SpeakResponse(action="empty", words=0)
+
+        if request.source == "auto" and not request.force:
+            text_hash = hashlib.sha256(result.filtered.encode("utf-8")).hexdigest()
+            if runtime.deduper.seen_or_remember(request.message_id, text_hash):
+                logger.info(
+                    "speak duplicate message_id=%s words=%s",
+                    request.message_id,
+                    result.words,
+                )
+                return SpeakResponse(action="duplicate", words=result.words)
+
+        if request.source == "auto" and result.reason is Reason.MARKDOWN:
+            runtime.pending.put(
+                PendingReply(
+                    session_id=request.session_id,
+                    message_id=request.message_id or "",
+                    text=result.filtered,
+                    reason=Reason.MARKDOWN.value,
+                    words=result.words,
+                    created_at=time.time(),
+                )
+            )
+            logger.info(
+                "speak pending reason=markdown message_id=%s words=%s",
+                request.message_id,
+                result.words,
+            )
+            return SpeakResponse(
+                action="pending", reason="markdown", words=result.words
+            )
+
+        if request.source == "auto" and result.reason is Reason.LONG:
+            runtime.pending.put(
+                PendingReply(
+                    session_id=request.session_id,
+                    message_id=request.message_id or "",
+                    text=result.filtered,
+                    reason=Reason.LONG.value,
+                    words=result.words,
+                    created_at=time.time(),
+                )
+            )
+            notice = (
+                f"This reply is {result.words} words. It was not read aloud. "
+                "Run the reader speak command to hear it."
+            )
+            if not runtime.pipeline.submit(
+                SpeechJob(
+                    id=uuid4().hex,
+                    text=notice,
+                    voice=request.voice or config.voice,
+                    session_id=request.session_id,
+                    message_id=request.message_id,
+                    source="notice",
+                )
+            ):
+                logger.warning(
+                    "speak queue_full reason=long message_id=%s", request.message_id
+                )
+                return SpeakResponse(action="queue_full", words=result.words)
+            logger.info(
+                "speak pending reason=long message_id=%s words=%s",
+                request.message_id,
+                result.words,
+            )
+            return SpeakResponse(action="pending", reason="long", words=result.words)
+
+        job = SpeechJob(
+            id=uuid4().hex,
+            text=result.filtered,
+            voice=request.voice or config.voice,
+            session_id=request.session_id,
+            message_id=request.message_id,
+            source=request.source,
+        )
+        if not runtime.pipeline.submit(job):
+            logger.warning(
+                "speak queue_full source=%s message_id=%s",
+                request.source,
+                request.message_id,
+            )
+            return SpeakResponse(action="queue_full", words=result.words)
+        logger.info(
+            "speak queued job_id=%s source=%s message_id=%s words=%s",
+            job.id,
+            request.source,
+            request.message_id,
+            result.words,
+        )
+        return SpeakResponse(action="queued", words=result.words, job_id=job.id)
 
     return app
