@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from enum import Enum
+
+from .config import Config
 
 _FENCED_BLOCK = re.compile(
     r"^[ \t]*(?P<quote>(?:>[ \t]?)*)[ \t]*(?P<fence>`{3,}|~{3,})[^\n]*\n"
@@ -41,6 +45,27 @@ _UNDERSCORE_ITALIC = re.compile(r"_(.+?)_")
 _EMOJI = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]")
 _SPACES = re.compile(r"[ \t]+")
 _NEWLINES = re.compile(r"\n{3,}")
+_HEADING_LINE = re.compile(r"^\s{0,3}#{1,6}\s+\S", re.MULTILINE)
+
+
+class Reason(str, Enum):
+    """Why a reply was classified as requiring review before speech."""
+
+    MARKDOWN = "markdown"
+    LONG = "long"
+
+
+@dataclass(frozen=True)
+class Classification:
+    """Speech filtering and hold decision for one assistant reply."""
+
+    filtered: str
+    words: int
+    headings: int
+    table_rows: int
+    document_like: bool
+    too_long: bool
+    reason: Reason | None
 
 
 def _append_table_run(run: list[str], blocks: list[list[str]]) -> None:
@@ -130,3 +155,47 @@ def filter_for_speech(raw: str, *, announce_code: bool = False) -> str:
 def count_words(text: str) -> int:
     """Return the number of whitespace-separated words in ``text``."""
     return len(text.split())
+
+
+def count_headings(raw: str) -> int:
+    """Return the number of Markdown heading lines in ``raw``."""
+    return len(_HEADING_LINE.findall(raw))
+
+
+def count_table_rows(raw: str) -> int:
+    """Return the number of Markdown table lines in ``raw``, headers included."""
+    return sum(len(block) for block in find_table_blocks(raw))
+
+
+def classify(
+    raw: str, *, turn_has_markdown_file: bool, config: Config
+) -> Classification:
+    """Filter ``raw`` and decide whether it should be read automatically."""
+    filtered = filter_for_speech(raw)
+    words = count_words(filtered)
+    headings = count_headings(raw)
+    table_rows = count_table_rows(raw)
+
+    document_like = (
+        headings >= config.document_headings
+        or (headings >= 1 and words > config.document_words)
+        or table_rows >= 6
+        or (turn_has_markdown_file and words > config.markdown_file_words)
+    )
+    too_long = words > config.max_words
+    if document_like:
+        reason: Reason | None = Reason.MARKDOWN
+    elif too_long:
+        reason = Reason.LONG
+    else:
+        reason = None
+
+    return Classification(
+        filtered=filtered,
+        words=words,
+        headings=headings,
+        table_rows=table_rows,
+        document_like=document_like,
+        too_long=too_long,
+        reason=reason,
+    )
