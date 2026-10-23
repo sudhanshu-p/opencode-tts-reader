@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 
 _FENCED_BLOCK = re.compile(
-    r"^[ \t]*(?:>[ \t]?)*[ \t]*(?P<fence>`{3,}|~{3,})[^\n]*\n"
-    r".*?(?:^[ \t]*(?:>[ \t]?)*[ \t]*(?P=fence)[ \t]*$)",
+    r"^[ \t]*(?P<quote>(?:>[ \t]?)*)[ \t]*(?P<fence>`{3,}|~{3,})[^\n]*\n"
+    r".*?^[ \t]*(?P=quote)[ \t]*(?P=fence)[ \t]*$",
     re.MULTILINE | re.DOTALL,
 )
 _UNCLOSED_FENCE = re.compile(

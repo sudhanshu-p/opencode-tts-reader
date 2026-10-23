@@ -48,6 +48,13 @@ def test_blockquoted_unclosed_fence_is_removed() -> None:
     assert "secret" not in out
 
 
+def test_top_level_fence_does_not_close_on_blockquoted_fence() -> None:
+    raw = "Before.\n```markdown\n> ```\nsecret code after\n```\nAfter."
+    out = clean(raw)
+    assert out == "Before. After."
+    assert "secret code after" not in out
+
+
 def test_single_pipe_prose_is_kept() -> None:
     assert clean("Use a | b as a separator.") == "Use a | b as a separator."
 
