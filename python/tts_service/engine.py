@@ -1,12 +1,17 @@
 """KittenTTS synthesis wrapper used by the reader pipeline."""
 
 import threading
+from collections.abc import Iterator
 
 import numpy as np
 
 from tts_service.config import Config
 
 DEFAULT_SAMPLE_RATE = 24000
+# Streamed segments stay small so the first audio arrives quickly and the next
+# segment is usually ready before playback catches up.
+STREAM_CHUNK_CHARS = 140
+STREAM_CHUNK_MIN_CHARS = 80
 
 
 class TTSEngine:
@@ -69,6 +74,32 @@ class TTSEngine:
             raise ValueError("text is empty")
         with self._lock:
             result = self._model.generate(text, voice=voice, normalize=True)
+        return self._unpack(result)
+
+    def synthesize_stream(self, text: str, voice: str) -> Iterator[tuple[np.ndarray, int]]:
+        """Yield audio segments as the model produces them."""
+        if self._model is None:
+            raise RuntimeError("KittenTTS model is not loaded")
+        if not text.strip():
+            raise ValueError("text is empty")
+        stream = getattr(self._model, "generate_stream", None)
+        with self._lock:
+            if stream is None:
+                result = self._model.generate(text, voice=voice, normalize=True)
+                yield self._unpack(result)
+                return
+            chunk_chars = max(1, min(self.config.chunk_max_chars, STREAM_CHUNK_CHARS))
+            advanced = {
+                "chunk_chars": chunk_chars,
+                "chunk_min_chars": max(1, min(STREAM_CHUNK_MIN_CHARS, chunk_chars)),
+            }
+            for result in stream(
+                text, voice=voice, normalize=True, advanced=advanced
+            ):
+                yield self._unpack(result)
+
+    def _unpack(self, result: object) -> tuple[np.ndarray, int]:
+        """Normalize the model's audio return shape to samples plus rate."""
         if isinstance(result, tuple):
             audio, sample_rate = result
             sample_rate = int(sample_rate)

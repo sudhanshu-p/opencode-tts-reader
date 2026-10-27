@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from tts_service.audio import AudioPlayer, write_wav
+from tts_service.audio import AudioPlayer, prepare_chunk, write_wav
 
 
 def test_write_wav_uses_24khz_pcm16(tmp_path: Path) -> None:
@@ -15,6 +15,21 @@ def test_write_wav_uses_24khz_pcm16(tmp_path: Path) -> None:
     data, sr = sf.read(path)
     assert sr == 24000
     assert len(data) == 2400
+
+
+def test_prepare_chunk_trims_silence_and_appends_pause() -> None:
+    sample_rate = 24000
+    speech = np.full(2400, 0.5, dtype=np.float32)
+    padded = np.concatenate(
+        [np.zeros(12000, dtype=np.float32), speech, np.zeros(12000, dtype=np.float32)]
+    )
+    prepared = prepare_chunk(padded, sample_rate, gap_s=0.1)
+
+    loud = np.nonzero(np.abs(prepared) > 0.01)[0]
+    assert len(loud) > 0
+    assert loud[0] / sample_rate < 0.05
+    assert (len(prepared) - loud[-1]) / sample_rate >= 0.09
+    assert len(prepared) < len(padded)
 
 
 def test_play_uses_afplay_without_shell(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -105,3 +120,17 @@ def test_nonzero_afplay_exit_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: Proc())
     with pytest.raises(RuntimeError, match="afplay"):
         AudioPlayer().play(tmp_path / "a.wav")
+
+
+def test_interrupted_afplay_exit_does_not_raise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Proc:
+        def wait(self) -> int:
+            return -15
+
+        def poll(self):
+            return -15
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: Proc())
+    AudioPlayer().play(tmp_path / "a.wav")

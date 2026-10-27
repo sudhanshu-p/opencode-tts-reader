@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from tts_service.audio import write_wav
+from tts_service.audio import prepare_chunk, write_wav
 from tts_service.config import Config
 
 logger = logging.getLogger(__name__)
@@ -198,16 +198,15 @@ class SpeechPipeline:
                     return
                 self._current_job = job.id
             logger.info("synthesis started job_id=%s", job.id)
-            chunks = split_chunks(job.text, self.config.chunk_max_chars)
-            for index, chunk in enumerate(chunks):
-                if self._generation_changed(generation):
-                    logger.info(
-                        "synthesis cancelled job_id=%s reason=generation-changed",
-                        job.id,
-                    )
-                    return
-                audio, sample_rate = self.engine.synthesize(chunk, job.voice)
-                path = self._audio_dir / f"{job.id}-{index}.wav"
+            count = 0
+            for audio, sample_rate in self._synthesize_segments(job, generation):
+                if audio.size == 0:
+                    continue
+                audio = prepare_chunk(audio, sample_rate)
+                if audio.size == 0:
+                    continue
+                path = self._audio_dir / f"{job.id}-{count}.wav"
+                count += 1
                 try:
                     write_wav(path, audio, sample_rate)
                 except Exception:
@@ -219,13 +218,27 @@ class SpeechPipeline:
                         job.id,
                     )
                     return
-            logger.info("synthesis finished job_id=%s chunks=%s", job.id, len(chunks))
+            logger.info("synthesis finished job_id=%s chunks=%s", job.id, count)
         except Exception:
             logger.exception("synthesis failed job_id=%s", job.id)
         finally:
             with self._state_lock:
                 if self._current_job == job.id:
                     self._current_job = None
+
+    def _synthesize_segments(self, job: SpeechJob, generation: int):
+        """Yield audio segments, streaming from the model when it supports it."""
+        stream = getattr(self.engine, "synthesize_stream", None)
+        if stream is None:
+            for chunk in split_chunks(job.text, self.config.chunk_max_chars):
+                if self._generation_changed(generation):
+                    return
+                yield self.engine.synthesize(chunk, job.voice)
+            return
+        for segment in stream(job.text, job.voice):
+            if self._generation_changed(generation):
+                return
+            yield segment
 
     def _wait_for_engine(self, job: SpeechJob, generation: int) -> bool:
         deadline = time.monotonic() + _ENGINE_READY_TIMEOUT_S

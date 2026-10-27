@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .config import Config
+from .currency import normalize_currency
 
 _FENCED_BLOCK = re.compile(
     r"^[ \t]*(?P<quote>(?:>[ \t]?)*)[ \t]*(?P<fence>`{3,}|~{3,})[^\n]*\n"
@@ -128,6 +129,7 @@ def filter_for_speech(raw: str, *, announce_code: bool = False) -> str:
     text = _IMAGE.sub(lambda match: match.group(1), text)
     text = _LINK.sub(lambda match: match.group(1), text)
     text = _INLINE_CODE.sub(" ", text)
+    text = normalize_currency(text)
     text = _LATEX_BLOCK.sub("", text)
     text = _LATEX_INLINE.sub("", text)
     text = _BARE_URL.sub(" ", text)

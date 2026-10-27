@@ -9,6 +9,8 @@ API keys and no cloud speech service.
 - Reads the final answer prose from a top-level OpenCode turn.
 - Never reads reasoning, tool output, code, diffs, tables, URLs, file paths, HTML,
   or LaTeX.
+- Expands currency shorthand such as `$13B`, `13B$`, `€2.5M`, and `USD 500k`
+  into spoken words.
 - Holds markdown/document replies until you explicitly run `/reader-speak`.
 - Holds replies longer than the configured word limit and offers the same command.
 - Plays queued replies one at a time, in completion order.
@@ -116,7 +118,8 @@ Important fields:
 - `max_words` — replies above this limit are held instead of read.
 - `ask_markdown` — `toast`, `dialog`, or `none`; controls the held-reply notice.
 - `include_subagents` — also consider child-session completions; off by default.
-- `chunk_max_chars` — maximum characters per synthesized audio chunk.
+- `chunk_max_chars` — upper bound for synthesized chunks. Streaming caps chunks at
+  140 characters so the next segment is ready before the current one ends.
 - `document_headings` / `document_words` — shape-based document detection.
 - `markdown_file_words` — word threshold for markdown-file turns.
 - `announce_code` / `announce_skipped` — optional notices for code and skipped text.

@@ -30,6 +30,17 @@ class FakeEngine:
         return np.zeros(2400, dtype=np.float32), 24000
 
 
+class StreamingEngine(FakeEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.streamed: list[str] = []
+
+    def synthesize_stream(self, text: str, voice: str):
+        self.streamed.append(text)
+        yield np.full(2400, 0.5, dtype=np.float32), 24000
+        yield np.full(2400, 0.5, dtype=np.float32), 24000
+
+
 class RecordingPlayer:
     def __init__(self) -> None:
         self.played: list[str] = []
@@ -68,6 +79,20 @@ def test_plays_jobs_in_fifo_order(tmp_path: Path) -> None:
         wait_until(lambda: len(player.played) == 2)
         assert engine.generated == ["First.", "Second."]
         assert player.played == ["j1-0.wav", "j2-0.wav"]
+    finally:
+        pipeline.shutdown()
+
+
+def test_streams_engine_output_without_splitting_text(tmp_path: Path) -> None:
+    engine = StreamingEngine()
+    pipeline, _, player = make_pipeline(tmp_path, engine=engine, chunk_max_chars=12)
+    pipeline.start()
+    try:
+        assert pipeline.submit(SpeechJob("j1", "One. Two. Three.", "Bella", "s", "m1"))
+        wait_until(lambda: len(player.played) == 2)
+        assert engine.streamed == ["One. Two. Three."]
+        assert engine.generated == []
+        assert player.played == ["j1-0.wav", "j1-1.wav"]
     finally:
         pipeline.shutdown()
 
