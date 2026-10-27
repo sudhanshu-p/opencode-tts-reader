@@ -168,11 +168,13 @@ export function createTuiPlugin(deps: TuiPluginDeps = {}) {
       });
 
       context.keymap.layer(() => ({
+        mode: "global",
         commands: [
           {
             id: "reader.voice",
             title: "Reader: choose voice",
             group: "Reader",
+            palette: true,
             slash: { name: "reader-voice" },
             run: async () => {
               await ready;

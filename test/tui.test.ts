@@ -169,6 +169,8 @@ describe("TUI plugin wiring", () => {
       schedule: (fn) => fn(),
     });
     await (plugin.setup as any)(ctx);
+    expect(layerFactory?.().mode).toBe("global");
+    expect(layerFactory?.().commands[0].palette).toBe(true);
     expect(layerFactory?.().commands[0].slash.name).toBe("reader-voice");
     idleHandler?.({ data: { sessionID: "s1" } });
     await Bun.sleep(10);
