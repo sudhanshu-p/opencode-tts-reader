@@ -145,15 +145,19 @@ export function createTuiPlugin(deps: TuiPluginDeps = {}) {
   return Plugin.define({
     id: "reader.tts.tui",
     setup(context) {
-      const unsubscribe = context.data.on("session.idle", (event) => {
+      const schedule =
+        deps.schedule ??
+        ((fn: () => void | Promise<void>, ms: number) => setTimeout(fn, ms));
+      const lastNotice = new Map<string, number>();
+      const handleIdle = (event: unknown) => {
         const sessionID = (event as { data?: { sessionID?: unknown } }).data
           ?.sessionID;
         if (typeof sessionID !== "string") return;
 
-        const schedule =
-          deps.schedule ??
-          ((fn: () => void | Promise<void>, ms: number) =>
-            setTimeout(fn, ms));
+        const now = Date.now();
+        if ((lastNotice.get(sessionID) ?? 0) > now - 1_000) return;
+        lastNotice.set(sessionID, now);
+
         schedule(() => {
           void (async () => {
             try {
@@ -165,7 +169,12 @@ export function createTuiPlugin(deps: TuiPluginDeps = {}) {
             }
           })();
         }, 500);
-      });
+      };
+
+      const unsubscribers = [
+        context.data.on("session.idle", handleIdle),
+        context.data.on("session.execution.succeeded", handleIdle),
+      ];
 
       context.keymap.layer(() => ({
         mode: "global",
@@ -184,7 +193,9 @@ export function createTuiPlugin(deps: TuiPluginDeps = {}) {
         ],
       }));
 
-      return unsubscribe;
+      return () => {
+        for (const unsubscribe of unsubscribers) unsubscribe();
+      };
     },
   });
 }

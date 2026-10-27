@@ -137,8 +137,10 @@ describe("TUI voice picker", () => {
 describe("TUI plugin wiring", () => {
   test("registers /reader-voice and toasts a held reply on idle", async () => {
     const toasts: any[] = [];
+    const eventNames: string[] = [];
     let idleHandler: ((event: any) => void) | undefined;
     let layerFactory: (() => any) | undefined;
+    let cleanups = 0;
     const fakeService = {
       ensureStarted: async () => {},
       pending: async () => [pending],
@@ -148,9 +150,12 @@ describe("TUI plugin wiring", () => {
     };
     const ctx = {
       data: {
-        on: (_name: string, handler: (event: any) => void) => {
+        on: (name: string, handler: (event: any) => void) => {
+          eventNames.push(name);
           idleHandler = handler;
-          return () => {};
+          return () => {
+            cleanups += 1;
+          };
         },
       },
       keymap: {
@@ -168,12 +173,18 @@ describe("TUI plugin wiring", () => {
       serviceFactory: () => fakeService as never,
       schedule: (fn) => fn(),
     });
-    await (plugin.setup as any)(ctx);
+    const cleanup = await (plugin.setup as any)(ctx);
+    expect(eventNames).toEqual([
+      "session.idle",
+      "session.execution.succeeded",
+    ]);
     expect(layerFactory?.().mode).toBe("global");
     expect(layerFactory?.().commands[0].palette).toBe(true);
     expect(layerFactory?.().commands[0].slash.name).toBe("reader-voice");
     idleHandler?.({ data: { sessionID: "s1" } });
     await Bun.sleep(10);
     expect(toasts[0].title).toBe("Markdown reply not read");
+    cleanup();
+    expect(cleanups).toBe(2);
   });
 });
